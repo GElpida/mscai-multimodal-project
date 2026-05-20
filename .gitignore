@@ -1,3 +1,6 @@
+# Files and folders to ignore
+/LAVIS/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
