@@ -1,15 +1,76 @@
 import argparse
+import io
 import json
+import random
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
+
+from PIL import Image
 
 # Allow "python src/prepare_data.py" from the repo root.
 sys.path.insert(0, str(Path(__file__).parent))
 from artpedia_dataset import ArtpediaDataset
 
 ARTPEDIA_JSON = Path(__file__).parent.parent / "dataset" / "artpedia" / "artpedia.json"
-SLEEP_BETWEEN_DOWNLOADS = 0.5  # seconds — be polite to Wikimedia
+SLEEP_BETWEEN_DOWNLOADS = 1.0  # seconds between successful downloads — be polite to Wikimedia
+
+# Retry settings for image downloads.
+MAX_RETRIES = 5
+RETRY_BASE_DELAY = 2.0  # seconds; doubles on each retry (2, 4, 8, 16, ...)
+
+# A descriptive User-Agent reduces aggressive rate-limiting by Wikimedia.
+# TODO: replace <your-email> with your actual contact address.
+USER_AGENT = "mscai-multimodal-project/1.0 (academic research; contact: <your-email>)"
+
+
+def download_with_retry(url):
+    """Download url and return a PIL RGB Image.
+
+    Retries on HTTP 429, 5xx, and connection/timeout errors with exponential
+    backoff.  HTTP 404 is treated as permanent and raises immediately.
+    Raises RuntimeError after MAX_RETRIES failed attempts.
+    """
+    delay = RETRY_BASE_DELAY
+    last_exc = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = resp.read()
+            return Image.open(io.BytesIO(data)).convert("RGB")
+
+        except urllib.error.HTTPError as e:
+            # 404 is permanent — no point retrying.
+            if e.code == 404:
+                raise RuntimeError(f"HTTP 404 (permanent): {url}") from e
+
+            if e.code == 429 or (500 <= e.code < 600):
+                last_exc = e
+                if attempt == MAX_RETRIES:
+                    break
+                # Respect Retry-After header when the server sends one.
+                retry_after = e.headers.get("Retry-After")
+                wait = float(retry_after) if retry_after else delay + random.random()
+                print(f"    [retry {attempt}/{MAX_RETRIES}] HTTP {e.code} — waiting {wait:.1f}s")
+                time.sleep(wait)
+                delay *= 2
+            else:
+                raise RuntimeError(f"HTTP {e.code}: {url}") from e
+
+        except (urllib.error.URLError, OSError) as e:
+            last_exc = e
+            if attempt == MAX_RETRIES:
+                break
+            wait = delay + random.random()
+            print(f"    [retry {attempt}/{MAX_RETRIES}] connection error — waiting {wait:.1f}s")
+            time.sleep(wait)
+            delay *= 2
+
+    raise RuntimeError(f"Failed after {MAX_RETRIES} attempts: {url}") from last_exc
 
 
 def parse_args():
@@ -67,9 +128,9 @@ def main():
                 # Image already cached — no download needed.
                 reused += 1
             else:
-                # Download via ArtpediaDataset (handles User-Agent header).
+                # Download with retry/backoff; uses the project User-Agent above.
                 try:
-                    image = dataset.load_image(i)
+                    image = download_with_retry(record["img_url"])
                     image.save(img_path, format="JPEG")
                     succeeded += 1
                 except RuntimeError as e:
