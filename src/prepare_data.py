@@ -133,6 +133,11 @@ def parse_args():
         "--thumb-width", type=int, default=THUMB_WIDTH,
         help=f"Pixel width for Wikimedia thumbnail downloads (default: {THUMB_WIDTH})",
     )
+    p.add_argument(
+        "--rebuild-manifest", action="store_true", default=False,
+        help="Overwrite any existing manifest and rewrite all entries with relative paths. "
+             "Images already on disk are reused; only missing ones are re-downloaded.",
+    )
     return p.parse_args()
 
 
@@ -165,29 +170,34 @@ def main():
     print(f"Images   → {img_dir.resolve()}")
     print(f"Manifest → {manifest_path.resolve()}\n")
 
-    # Build a set of image indices already recorded in the manifest so reruns
-    # skip them cleanly without writing duplicate lines.
+    # In rebuild mode we ignore any existing manifest and rewrite from scratch.
+    # Otherwise read it to find already-recorded indices so reruns don't duplicate lines.
     already_recorded = set()
-    if manifest_path.exists():
-        with open(manifest_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    # Index is encoded in the image filename (e.g. "42.jpg").
-                    stem = Path(entry["image_path"]).stem
-                    already_recorded.add(int(stem))
-                except (json.JSONDecodeError, KeyError, ValueError):
-                    pass
-        print(f"Resuming: {len(already_recorded)} records already in manifest.\n")
+    if args.rebuild_manifest:
+        print("--rebuild-manifest set: overwriting existing manifest.\n")
+        manifest_open_mode = "w"
+    else:
+        if manifest_path.exists():
+            with open(manifest_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        # Index is encoded in the image filename (e.g. "42.jpg").
+                        stem = Path(entry["image_path"]).stem
+                        already_recorded.add(int(stem))
+                    except (json.JSONDecodeError, KeyError, ValueError):
+                        pass
+            print(f"Resuming: {len(already_recorded)} records already in manifest.\n")
+        manifest_open_mode = "a"
 
     succeeded = 0  # freshly downloaded this run
     reused = 0     # already on disk (skipped download but still in manifest)
     skipped = 0    # empty captions or download failures
 
-    with open(manifest_path, "a", encoding="utf-8") as manifest:
+    with open(manifest_path, manifest_open_mode, encoding="utf-8") as manifest:
         try:
             for i in range(len(dataset)):
                 record = dataset[i]
@@ -232,9 +242,11 @@ def main():
                     # Pause between actual downloads to avoid hammering Wikimedia.
                     time.sleep(args.delay)
 
-                # Write one JSON line to the manifest (absolute path avoids ambiguity).
+                # Store a relative path with forward slashes so the manifest is
+                # portable across machines (Colab, Windows, etc.).
+                rel_path = f"images/{split}/{i}.jpg"
                 entry = {
-                    "image_path": str(img_path.resolve()),
+                    "image_path": rel_path,
                     "caption": caption,
                     "title": record["title"],
                 }
