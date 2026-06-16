@@ -15,15 +15,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from artpedia_dataset import ArtpediaDataset
 
 ARTPEDIA_JSON = Path(__file__).parent.parent / "dataset" / "artpedia" / "artpedia.json"
-SLEEP_BETWEEN_DOWNLOADS = 1.0  # seconds between successful downloads — be polite to Wikimedia
+SLEEP_BETWEEN_DOWNLOADS = 0.5  # seconds between successful downloads
 
 # Retry settings for image downloads.
 MAX_RETRIES = 5
 RETRY_BASE_DELAY = 2.0  # seconds; doubles on each retry (2, 4, 8, 16, ...)
 
-# A descriptive User-Agent reduces aggressive rate-limiting by Wikimedia.
-# TODO: replace <your-email> with your actual contact address.
-USER_AGENT = "mscai-multimodal-project/1.0 (academic research; contact: <your-email>)"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 
 def download_with_retry(url):
