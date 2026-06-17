@@ -34,6 +34,12 @@ def parse_args():
                    help="DataLoader worker processes (default: 0, Windows-safe)")
     p.add_argument("--unfreeze-last-n", type=int, default=2,
                    help="Train only the last N decoder transformer layers + cls head (default: 2)")
+    p.add_argument("--use-mlflow",        action="store_true", default=False,
+                   help="Enable MLflow experiment tracking")
+    p.add_argument("--mlflow-experiment", default="blip-artpedia",
+                   help="MLflow experiment name (default: blip-artpedia)")
+    p.add_argument("--run-name",          default=None,
+                   help="MLflow run name (optional)")
     return p.parse_args()
 
 
@@ -147,6 +153,24 @@ def main():
     use_amp = args.fp16 and device.type == "cuda"
     scaler  = torch.cuda.amp.GradScaler(enabled=use_amp)
 
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    # Lazy MLflow setup — only imported when --use-mlflow is set.
+    if args.use_mlflow:
+        import mlflow
+        mlflow.set_experiment(args.mlflow_experiment)
+        mlflow_run = mlflow.start_run(run_name=args.run_name)
+        mlflow.log_params({
+            "epochs":           args.epochs,
+            "batch_size":       args.batch_size,
+            "lr":               args.lr,
+            "unfreeze_last_n":  args.unfreeze_last_n,
+            "freeze_vision":    args.freeze_vision,
+            "fp16":             args.fp16,
+            "trainable_params": trainable_params,
+            "dataset_size":     len(dataset),
+        })
+
     LOG_EVERY = 10  # print running-average loss every N steps
 
     try:
@@ -176,17 +200,25 @@ def main():
                     print(f"  Epoch {epoch} | step {step}/{len(loader)} | loss {running_loss / LOG_EVERY:.4f}")
                     running_loss = 0.0
 
-            print(f"Epoch {epoch} complete — avg loss: {total_loss / len(loader):.4f}")
+            epoch_loss = total_loss / len(loader)
+            print(f"Epoch {epoch} complete — avg loss: {epoch_loss:.4f}")
 
             ckpt = output_dir / f"blip_artpedia_epoch{epoch}.pth"
             torch.save(model.state_dict(), ckpt)
             print(f"Checkpoint saved: {ckpt}")
+
+            if args.use_mlflow:
+                mlflow.log_metric("train_loss", epoch_loss, step=epoch)
+                mlflow.set_tag(f"checkpoint_epoch_{epoch}", str(ckpt))
 
     except RuntimeError as e:
         if "out of memory" in str(e).lower():
             print("\n[OOM] CUDA ran out of memory. Try a smaller --batch-size or enable --fp16.")
             sys.exit(1)
         raise
+    finally:
+        if args.use_mlflow:
+            mlflow.end_run()
 
 
 if __name__ == "__main__":

@@ -32,6 +32,12 @@ def parse_args():
                    help="Evaluate only first N images (0 = all)")
     p.add_argument("--results-json", default="eval_results.json",
                    help="Where to write metric results (default: eval_results.json)")
+    p.add_argument("--use-mlflow",        action="store_true", default=False,
+                   help="Enable MLflow experiment tracking")
+    p.add_argument("--mlflow-experiment", default="blip-artpedia",
+                   help="MLflow experiment name (default: blip-artpedia)")
+    p.add_argument("--run-name",          default=None,
+                   help="MLflow run name (optional)")
     return p.parse_args()
 
 
@@ -151,6 +157,22 @@ def main():
         print("  " + "-" * 38)
         for k in pre_metrics:
             print(f"  {k:<12} {pre_metrics[k]:>12.4f} {ft_metrics[k]:>12.4f}")
+
+    # --- Optional MLflow logging (lazy import) ---
+    if args.use_mlflow:
+        import mlflow
+        mlflow.set_experiment(args.mlflow_experiment)
+        with mlflow.start_run(run_name=args.run_name):
+            mlflow.log_params({
+                "checkpoint":  args.checkpoint or "pretrained_only",
+                "split":       args.split,
+                "limit":       args.limit,
+            })
+            for k, v in pre_metrics.items():
+                mlflow.log_metric(f"pretrained_{k}", v)
+            if ft_metrics:
+                for k, v in ft_metrics.items():
+                    mlflow.log_metric(f"finetuned_{k}", v)
 
     # --- Save results ---
     out_path = Path(args.results_json)
