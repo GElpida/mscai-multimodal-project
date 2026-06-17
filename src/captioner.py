@@ -8,7 +8,8 @@ from lavis.models import load_model_and_preprocess
 class Captioner:
     """Thin wrapper around a LAVIS captioning model."""
 
-    def __init__(self, model_name="blip_caption", model_type="base_coco", device=None):
+    def __init__(self, model_name="blip_caption", model_type="base_coco", device=None,
+                 checkpoint_path=None):
         # Auto-detect device when not specified.
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -23,6 +24,25 @@ class Captioner:
         )
         # Only the "eval" preprocessor is needed for inference.
         self.vis_processor = vis_processors["eval"]
+
+        # Optionally load a fine-tuned state_dict checkpoint.
+        if checkpoint_path is not None:
+            raw = torch.load(checkpoint_path, map_location=device)
+            # Unwrap if saved as {"model": ..., } or {"state_dict": ...}.
+            if isinstance(raw, dict) and not any(
+                k.startswith(("visual_encoder", "text_decoder"))
+                for k in list(raw.keys())[:5]
+            ):
+                state_dict = raw.get("model") or raw.get("state_dict") or raw
+            else:
+                state_dict = raw
+            result = self.model.load_state_dict(state_dict, strict=False)
+            missing  = len(result.missing_keys)
+            unexpected = len(result.unexpected_keys)
+            print(f"Loaded checkpoint: {checkpoint_path}")
+            print(f"  missing keys: {missing}  unexpected keys: {unexpected}")
+
+        self.model.eval()
 
     def caption_image(self, pil_image, num_captions=1):
         """Caption a PIL RGB image and return a list of caption strings.
@@ -57,7 +77,7 @@ if __name__ == "__main__":
     record = dataset[0]
 
     print(f"Title : {record['title']}")
-    print(f"Ground-truth visual sentences:")
+    print("Ground-truth visual sentences:")
     for s in record["visual_sentences"]:
         print(f"  - {s}")
 
