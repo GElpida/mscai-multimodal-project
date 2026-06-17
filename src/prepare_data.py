@@ -220,19 +220,11 @@ def main():
                     # Image on disk but not yet in manifest — record it now.
                     reused += 1
                 else:
-                    # Prefer the cached thumbnail (smaller, less rate-limited).
-                    # Fall back to the original URL once if the thumbnail is 404.
-                    original_url = record["img_url"]
-                    thumb_url = wikimedia_thumb_url(original_url, args.thumb_width)
+                    # Download the cached thumbnail only — never fall back to the
+                    # full-resolution original URL (it triggers aggressive 429s).
+                    thumb_url = wikimedia_thumb_url(record["img_url"], args.thumb_width)
                     try:
-                        try:
-                            image = download_with_retry(thumb_url)
-                        except RuntimeError as e:
-                            if thumb_url != original_url and "404" in str(e):
-                                print(f"    [fallback] thumbnail 404 — retrying original URL")
-                                image = download_with_retry(original_url)
-                            else:
-                                raise
+                        image = download_with_retry(thumb_url)
                         image.save(img_path, format="JPEG")
                         succeeded += 1
                     except RuntimeError as e:

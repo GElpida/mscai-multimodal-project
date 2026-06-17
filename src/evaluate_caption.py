@@ -1,0 +1,163 @@
+"""Evaluate BLIP captioning on Artpedia test split using BLEU-4 and CIDEr.
+Compares pretrained base model vs an optional fine-tuned checkpoint.
+"""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import torch
+from PIL import Image
+from pycocoevalcap.bleu.bleu import Bleu
+from pycocoevalcap.cider.cider import Cider
+
+# Allow "python src/evaluate_caption.py" from the repo root.
+sys.path.insert(0, str(Path(__file__).parent))
+from artpedia_dataset import ArtpediaDataset
+
+ARTPEDIA_DEFAULT = str(
+    Path(__file__).parent.parent / "dataset" / "artpedia" / "artpedia.json"
+)
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Evaluate BLIP captioning on Artpedia.")
+    p.add_argument("--manifest",     required=True, help="Path to test .jsonl manifest")
+    p.add_argument("--base-dir",     required=True, help="Base dir for resolving relative image paths")
+    p.add_argument("--artpedia",     default=ARTPEDIA_DEFAULT, help="Path to artpedia.json")
+    p.add_argument("--checkpoint",   default=None,   help="Fine-tuned state_dict .pth (optional)")
+    p.add_argument("--split",        default="test")
+    p.add_argument("--limit",        type=int, default=0,
+                   help="Evaluate only first N images (0 = all)")
+    p.add_argument("--results-json", default="eval_results.json",
+                   help="Where to write metric results (default: eval_results.json)")
+    return p.parse_args()
+
+
+def load_eval_data(args):
+    """Read manifest + artpedia to build a list of (img_path, refs) pairs."""
+    artpedia_ds = ArtpediaDataset(args.artpedia, split=args.split)
+    base_dir    = Path(args.base_dir)
+
+    eval_data = []
+    with open(args.manifest, encoding="utf-8-sig") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            # Derive the split-local index from the image filename stem (e.g. "42.jpg" → 42).
+            try:
+                idx = int(Path(entry["image_path"]).stem)
+            except (ValueError, KeyError):
+                print(f"  [WARN] Cannot parse index from '{entry.get('image_path')}' — skipping.")
+                continue
+
+            if idx >= len(artpedia_ds):
+                print(f"  [WARN] Index {idx} out of range ({len(artpedia_ds)}) — skipping.")
+                continue
+
+            refs = artpedia_ds[idx].get("visual_sentences", [])
+            if not refs:
+                continue
+
+            img_path = base_dir / Path(entry["image_path"])
+            if not img_path.exists():
+                print(f"  [WARN] Image not found: {img_path} — skipping.")
+                continue
+
+            eval_data.append((img_path, refs))
+            if args.limit > 0 and len(eval_data) >= args.limit:
+                break
+
+    return eval_data
+
+
+def eval_model(model, vis_processor, eval_data, device):
+    """Generate captions and return {"Bleu_4": float, "CIDEr": float}."""
+    gts, res = {}, {}
+    model.eval()
+
+    with torch.no_grad():
+        for img_id, (img_path, refs) in enumerate(eval_data):
+            image        = Image.open(img_path).convert("RGB")
+            image_tensor = vis_processor(image).unsqueeze(0).to(device)
+            caption      = model.generate({"image": image_tensor})[0]
+            gts[img_id]  = refs          # list of reference strings
+            res[img_id]  = [caption]     # single generated caption
+
+    bleu_scores, _ = Bleu(4).compute_score(gts, res)
+    cider_score, _ = Cider().compute_score(gts, res)
+
+    return {"Bleu_4": bleu_scores[3], "CIDEr": cider_score}
+
+
+def print_results(label, metrics):
+    print(f"\n  {label}")
+    for k, v in metrics.items():
+        print(f"    {k:10s}: {v:.4f}")
+
+
+def main():
+    args   = parse_args()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+
+    eval_data = load_eval_data(args)
+    print(f"Evaluation set: {len(eval_data)} images")
+    if not eval_data:
+        print("No images to evaluate — check manifest and base-dir.")
+        sys.exit(1)
+
+    from lavis.models import load_model_and_preprocess
+
+    # --- Pretrained model ---
+    print("\nLoading pretrained blip_caption/base_coco...")
+    model_pre, vis_processors, _ = load_model_and_preprocess(
+        name="blip_caption", model_type="base_coco", is_eval=True, device=device
+    )
+    vis_proc_eval = vis_processors["eval"]
+
+    print("Evaluating pretrained model...")
+    pre_metrics = eval_model(model_pre, vis_proc_eval, eval_data, device)
+    print_results("PRETRAINED", pre_metrics)
+
+    results = {"pretrained": pre_metrics}
+
+    # --- Fine-tuned checkpoint (optional) ---
+    ft_metrics = None
+    if args.checkpoint:
+        print(f"\nLoading fine-tuned checkpoint: {args.checkpoint}")
+        model_ft, vis_processors_ft, _ = load_model_and_preprocess(
+            name="blip_caption", model_type="base_coco", is_eval=True, device=device
+        )
+        state_dict = torch.load(args.checkpoint, map_location=device)
+        model_ft.load_state_dict(state_dict)
+        model_ft.eval()
+
+        print("Evaluating fine-tuned model...")
+        ft_metrics = eval_model(model_ft, vis_processors_ft["eval"], eval_data, device)
+        print_results("FINE-TUNED", ft_metrics)
+        results["finetuned"] = ft_metrics
+
+    # --- Side-by-side summary ---
+    if ft_metrics:
+        print("\n  {'Metric':<12} {'Pretrained':>12} {'Fine-tuned':>12}")
+        print("  " + "-" * 38)
+        for k in pre_metrics:
+            print(f"  {k:<12} {pre_metrics[k]:>12.4f} {ft_metrics[k]:>12.4f}")
+
+    # --- Save results ---
+    out_path = Path(args.results_json)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2)
+    print(f"\nResults saved to {out_path}")
+
+
+if __name__ == "__main__":
+    main()
