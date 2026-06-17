@@ -11,6 +11,11 @@ from pathlib import Path
 
 from PIL import Image
 
+# Raise PIL's decompression-bomb limit to accommodate legitimately large artwork scans.
+# The default (~89 MP) is too conservative for high-resolution museum images; 500 MP
+# still blocks truly pathological files (error fires at 2× this value, i.e. 1 GP).
+Image.MAX_IMAGE_PIXELS = 500_000_000
+
 # Allow "python src/prepare_data.py" from the repo root.
 sys.path.insert(0, str(Path(__file__).parent))
 from artpedia_dataset import ArtpediaDataset
@@ -77,7 +82,13 @@ def download_with_retry(url):
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = resp.read()
-            return Image.open(io.BytesIO(data)).convert("RGB")
+            try:
+                return Image.open(io.BytesIO(data)).convert("RGB")
+            except Image.DecompressionBombError as e:
+                raise RuntimeError(f"Image too large (decompression bomb): {url}") from e
+            except OSError as e:
+                # PIL.UnidentifiedImageError and other decode failures inherit from OSError.
+                raise RuntimeError(f"PIL could not decode image: {url}") from e
 
         except urllib.error.HTTPError as e:
             # 404 is permanent — no point retrying.
