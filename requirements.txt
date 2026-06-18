@@ -1,10 +1,11 @@
+#For local installation only, use the following command:
+# pip install -r requirements.txt
+# then install LAVIS from source
+
 # ===== Core Python ML stack =====
 torch==2.2.2
 torchvision==0.17.2
 torchaudio==2.2.2
-
-# ===== LAVIS =====
-salesforce-lavis==1.0.2
 
 # ===== HuggingFace ecosystem (compatible with LAVIS) =====
 transformers==4.26.1
