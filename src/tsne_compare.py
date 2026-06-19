@@ -19,6 +19,7 @@ Extraction:
 """
 
 import argparse
+import datetime
 import json
 import sys
 from pathlib import Path
@@ -45,7 +46,10 @@ def parse_args():
     p.add_argument("--checkpoint", required=True, help="Fine-tuned state_dict .pth")
     p.add_argument("--split",      default="test")
     p.add_argument("--limit",      type=int, default=0, help="Max images (0=all)")
-    p.add_argument("--output",     default="tsne_compare.png")
+    p.add_argument("--output",     default="tsne_compare.png",
+                   help="Output PNG filename (written inside --output-dir/tsne_<timestamp>/)")
+    p.add_argument("--output-dir", default="outputs",
+                   help="Root outputs directory; a timestamped tsne_<...>/ subfolder is created")
     return p.parse_args()
 
 
@@ -139,6 +143,12 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
+    # Per-run timestamped folder.
+    ts_str  = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_dir = Path(args.output_dir) / f"tsne_{ts_str}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Run folder: {run_dir}")
+
     eval_data = load_eval_data(args)
     print(f"Loaded {len(eval_data)} images.")
     if len(eval_data) < 5:
@@ -160,7 +170,11 @@ def main():
     model_ft, vis_ft, _ = load_model_and_preprocess(
         name="blip_caption", model_type="base_coco", is_eval=True, device=device
     )
-    model_ft.load_state_dict(torch.load(args.checkpoint, map_location=device))
+    result = model_ft.load_state_dict(
+        torch.load(args.checkpoint, map_location=device, weights_only=True), strict=False
+    )
+    if result.missing_keys or result.unexpected_keys:
+        print(f"  missing keys: {len(result.missing_keys)}  unexpected: {len(result.unexpected_keys)}")
     model_ft.eval()
     print("Extracting fine-tuned features...")
     feats_ft = extract_features(model_ft, vis_ft["eval"], eval_data, device)
@@ -201,7 +215,7 @@ def main():
                ncol=min(len(unique_centuries), 7), bbox_to_anchor=(0.5, -0.04))
     plt.tight_layout(rect=[0, 0.07, 1, 1])
 
-    out_path = Path(args.output)
+    out_path = run_dir / Path(args.output).name
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"Saved: {out_path}")
 

@@ -20,9 +20,12 @@ class ArtpediaDataset:
     """Lazy-loading dataset wrapper for Artpedia.
 
     Images are NOT loaded at init time; call load_image(index) on demand.
+
+    Pass data_dir to load images from disk (data_dir/images/<split>/<i>.jpg)
+    instead of downloading from the internet. Recommended for local execution.
     """
 
-    def __init__(self, json_path, split=None):
+    def __init__(self, json_path, split=None, data_dir=None):
         """Load records from json_path, optionally filtering by split."""
         with open(json_path, encoding="utf-8") as f:
             raw = json.load(f)
@@ -35,6 +38,8 @@ class ArtpediaDataset:
             records = [r for r in records if r.get("split") == split]
 
         self.records = records
+        self.split = split
+        self.data_dir = Path(data_dir) if data_dir else None
 
     def __len__(self):
         return len(self.records)
@@ -44,10 +49,19 @@ class ArtpediaDataset:
         return self.records[index]
 
     def load_image(self, index):
-        """Download and return the image at records[index] as a PIL RGB image.
+        """Return the image at records[index] as a PIL RGB image.
 
-        Raises RuntimeError with a clear message if the download fails.
+        If data_dir was given at init, loads from disk first
+        (data_dir/images/<split>/<index>.jpg). Falls back to URL download
+        if the local file does not exist or data_dir was not set.
         """
+        # Try local cache first (avoids network and SSL issues).
+        if self.data_dir is not None and self.split is not None:
+            local_path = self.data_dir / "images" / self.split / f"{index}.jpg"
+            if local_path.exists():
+                return Image.open(local_path).convert("RGB")
+
+        # Fall back to downloading from img_url.
         record = self.records[index]
         url = record["img_url"]
 

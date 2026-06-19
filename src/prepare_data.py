@@ -23,7 +23,7 @@ from artpedia_dataset import ArtpediaDataset
 ARTPEDIA_JSON = Path(__file__).parent.parent / "dataset" / "artpedia" / "artpedia.json"
 
 # Retry settings for image downloads.
-MAX_RETRIES = 5
+MAX_RETRIES = 2
 RETRY_BASE_DELAY = 2.0  # seconds; doubles on each retry (2, 4, 8, 16, ...)
 MAX_WAIT = 30.0         # seconds; stop the run if any retry wait would exceed this
 
@@ -252,6 +252,7 @@ def main():
                     "image_path": rel_path,
                     "caption": caption,
                     "title": record["title"],
+                    "year": record.get("year"),
                 }
                 manifest.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
