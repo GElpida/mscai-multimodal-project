@@ -1,10 +1,14 @@
-"""Zero-shot evaluation of BLIP captioning on VizWiz-Caps (streaming).
+"""Zero-shot evaluation of BLIP captioning on VizWiz-Caps.
 
 VizWiz-Caps contains photos taken by blind people — a real-world domain-robustness
 test for a model fine-tuned on art-style captions (Artpedia).
 
-Streaming mode: images are fetched on demand from HuggingFace; the full val split
-(~7.5 GB) is never written to disk.  Only --limit samples are consumed.
+Two loading modes:
+  --vizwiz-dir PATH   Load images and captions from a local directory:
+                        PATH/val/          ← JPEG images
+                        PATH/val.json      ← official annotation file
+  (no flag)           Stream from HuggingFace (lmms-lab/VizWiz-Caps).
+                      Requires network access; may hit rate limits.
 """
 
 import argparse
@@ -184,6 +188,10 @@ def parse_args():
     p.add_argument("--run-name",          default=None)
     p.add_argument("--output-dir",        default="outputs",
                    help="Root outputs directory; a timestamped vizwiz_<...>/ subfolder is created")
+    p.add_argument("--vizwiz-dir",         default=None,
+                   help="Path to local VizWiz directory containing "
+                        "<split>/ images folder and <split>.json annotation file. "
+                        "When provided, HuggingFace streaming is skipped entirely.")
     p.add_argument("--hf-timeout",        type=int, default=120,
                    help="HuggingFace download timeout in seconds (default: 120); "
                         "increase on slow connections to avoid ReadTimeoutError")
@@ -205,84 +213,137 @@ def main():
     run_dir.mkdir(parents=True, exist_ok=True)
     print(f"Run folder: {run_dir}")
 
-    # Set HuggingFace download timeout BEFORE any HF/datasets import so that
-    # slow connections don't hit a premature ReadTimeoutError mid-stream.
-    _os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = str(args.hf_timeout)
+    # ---- Build eval_data: local files OR HuggingFace streaming ---------------
+    eval_data = []
 
-    # ---- Connectivity check — test the HF Hub API, not just the homepage -----
-    import requests as _req
-    _hf_api = "https://huggingface.co/api/datasets/lmms-lab/VizWiz-Caps"
-    try:
-        _r = _req.head(_hf_api, timeout=15)
-        # 200 or 401/403 both mean we reached the server — only network errors abort.
-    except Exception as _e:
+    if args.vizwiz_dir:
+        # ---- Local mode: load from downloaded annotation JSON + image folder --
+        from collections import defaultdict
+        from PIL import Image as _PILImage
+
+        vizwiz_dir = Path(args.vizwiz_dir)
+        ann_path   = vizwiz_dir / f"{args.split}.json"
+        img_dir    = vizwiz_dir / args.split
+
+        if not ann_path.exists():
+            print(f"[ERROR] Annotation file not found: {ann_path}", flush=True)
+            sys.exit(1)
+        if not img_dir.is_dir():
+            print(f"[ERROR] Images folder not found: {img_dir}", flush=True)
+            sys.exit(1)
+
+        print(f"Loading annotations from {ann_path} ...", flush=True)
+        with open(ann_path, encoding="utf-8") as _f:
+            _ann = json.load(_f)
+
+        # Group captions by image_id; drop rejected and precanned entries
+        # (precanned = preset "unanswerable" response, not a real description).
+        _id_to_caps = defaultdict(list)
+        for _a in _ann["annotations"]:
+            if _a.get("is_rejected") or _a.get("is_precanned"):
+                continue
+            _cap = _a.get("caption", "").strip()
+            if _cap:
+                _id_to_caps[_a["image_id"]].append(_cap)
+
         print(
-            f"\n[ERROR] Cannot reach HuggingFace Hub API: {_e}\n\n"
-            "This is a network-level failure (not an SSL or code issue).\n"
-            "Possible fixes:\n"
-            "  1. Check your internet connection.\n"
-            "  2. If behind a proxy:\n"
-            "       $env:HTTPS_PROXY='http://proxy-host:port'  (PowerShell)\n"
-            "       set HTTPS_PROXY=http://proxy-host:port     (cmd)\n"
-            "  3. If on a corporate/university network, ask IT to whitelist huggingface.co.\n"
-            "  4. Try opening https://huggingface.co in a browser to confirm general access.\n",
+            f"  {len(_ann['images'])} images in JSON, "
+            f"{len(_ann['annotations'])} annotations "
+            f"→ {sum(len(v) for v in _id_to_caps.values())} usable captions",
             flush=True,
         )
-        sys.exit(1)
-    print(f"HuggingFace reachable (HTTP {_r.status_code}).", flush=True)
 
-    # ---- Stream dataset (no full download) ---------------------------------
-    print(
-        "Connecting to HuggingFace and streaming VizWiz val split "
-        "(this can take a while on a slow connection)...",
-        flush=True,
-    )
-    from datasets import load_dataset   # lazy import; not needed for non-streaming usage
-    import time as _time
-    stream = None
-    for _attempt in range(1, 4):
-        try:
-            stream = load_dataset("lmms-lab/VizWiz-Caps", split=args.split, streaming=True)
-            break
-        except Exception as _e:
-            if _attempt == 3:
-                raise
-            print(f"  [WARN] load_dataset attempt {_attempt} failed: {_e}  — retrying in 5 s...", flush=True)
-            _time.sleep(5)
-
-    # Defensive field discovery: inspect the first sample and print its schema
-    # so that any schema change is immediately visible instead of silently broken.
-    first = next(iter(stream))
-    print("\n--- First sample schema ---")
-    for k, v in first.items():
-        shape = getattr(v, "size", None) or (len(v) if hasattr(v, "__len__") else "?")
-        print(f"  {k!r:30s} type={type(v).__name__}, shape/len={shape}")
-    print("---------------------------\n")
-
-    import itertools
-    eval_data = []
-    # Chain first back so schema-peek doesn't lose a sample.
-    with tqdm(total=args.limit, desc="Collecting VizWiz samples", unit="img") as pbar:
-        for sample in itertools.chain([first], stream):
-            try:
-                image = get_image(sample).convert("RGB")
-                refs  = get_references(sample)
-                if not refs:
+        _missing = 0
+        with tqdm(total=args.limit or len(_ann["images"]),
+                  desc="Loading VizWiz images", unit="img") as _pbar:
+            for _img_info in _ann["images"]:
+                _img_id = _img_info["id"]
+                _refs   = _id_to_caps.get(_img_id)
+                if not _refs:
                     continue
-            except SystemExit:
-                raise
-            except Exception as exc:
-                print(f"  [WARN] Skipping malformed sample: {exc}")
-                continue
+                _img_path = img_dir / _img_info["file_name"]
+                if not _img_path.exists():
+                    _missing += 1
+                    continue
+                try:
+                    _image = _PILImage.open(_img_path).convert("RGB")
+                except Exception as _exc:
+                    print(f"  [WARN] Cannot open {_img_path.name}: {_exc}")
+                    continue
+                eval_data.append((_image, _refs))
+                _pbar.update(1)
+                if args.limit and len(eval_data) >= args.limit:
+                    break
 
-            eval_data.append((image, refs))
-            pbar.update(1)
-            if len(eval_data) >= args.limit:
+        if _missing:
+            print(f"  [INFO] {_missing} images listed in JSON but not found on disk (skipped).", flush=True)
+
+    else:
+        # ---- HuggingFace streaming mode --------------------------------------
+        _os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = str(args.hf_timeout)
+
+        import requests as _req
+        _hf_api = "https://huggingface.co/api/datasets/lmms-lab/VizWiz-Caps"
+        try:
+            _r = _req.head(_hf_api, timeout=15)
+        except Exception as _e:
+            print(
+                f"\n[ERROR] Cannot reach HuggingFace Hub API: {_e}\n\n"
+                "Tip: pass --vizwiz-dir to use a locally downloaded dataset.\n",
+                flush=True,
+            )
+            sys.exit(1)
+        print(f"HuggingFace reachable (HTTP {_r.status_code}).", flush=True)
+
+        print("Connecting to HuggingFace and streaming VizWiz val split ...", flush=True)
+        from datasets import load_dataset
+        import time as _time
+        _MAX_ATTEMPTS = 7
+        _BACKOFF_BASE  = 10
+        _stream = None
+        for _attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                _stream = load_dataset("lmms-lab/VizWiz-Caps", split=args.split, streaming=True)
                 break
+            except Exception as _e:
+                if _attempt == _MAX_ATTEMPTS:
+                    raise
+                _wait = _BACKOFF_BASE * (2 ** (_attempt - 1))
+                print(
+                    f"  [WARN] load_dataset attempt {_attempt}/{_MAX_ATTEMPTS - 1} failed: {_e}"
+                    f"  — retrying in {_wait} s...",
+                    flush=True,
+                )
+                _time.sleep(_wait)
+
+        _first = next(iter(_stream))
+        print("\n--- First sample schema ---")
+        for _k, _v in _first.items():
+            _shape = getattr(_v, "size", None) or (len(_v) if hasattr(_v, "__len__") else "?")
+            print(f"  {_k!r:30s} type={type(_v).__name__}, shape/len={_shape}")
+        print("---------------------------\n")
+
+        import itertools
+        with tqdm(total=args.limit, desc="Collecting VizWiz samples", unit="img") as _pbar:
+            for _sample in itertools.chain([_first], _stream):
+                try:
+                    _image = get_image(_sample).convert("RGB")
+                    _refs  = get_references(_sample)
+                    if not _refs:
+                        continue
+                except SystemExit:
+                    raise
+                except Exception as _exc:
+                    print(f"  [WARN] Skipping malformed sample: {_exc}")
+                    continue
+                eval_data.append((_image, _refs))
+                _pbar.update(1)
+                if len(eval_data) >= args.limit:
+                    break
 
     print(f"Collected {len(eval_data)} valid samples.", flush=True)
     if not eval_data:
-        print("No valid samples — check the schema output above and adjust field helpers.")
+        print("No valid samples — check your --vizwiz-dir path or HuggingFace connection.")
         sys.exit(1)
 
     # ---- Load LAVIS (deferred so field-discovery errors surface first) -----
