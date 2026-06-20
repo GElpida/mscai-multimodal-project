@@ -47,7 +47,10 @@ _RULES_CORE = [
     # These caught artist-name sentences well in initial testing — keep as-is.
     ("attribution",  r"\bpainting by\b"),
     ("attribution",  r"\bpainted by\b"),
-    ("attribution",  r"\bis an? (?:oil |watercolour |watercolor |tempera )?painting\b"),
+    # REMOVED: r"\bis an? (?:oil |watercolour |watercolor |tempera )?painting\b"
+    # Reason: "is an oil painting" is a medium description (visual content).
+    # The authorship case ("is an oil painting BY <artist>") is already caught
+    # by "painting by" / "painted by" / "by the ... artist" above.
     ("attribution",  r"\bwork by\b"),
     ("attribution",  r"\bby the\b.{0,50}\bartist\b"),   # "by the Dutch artist ..."
     ("attribution",  r"\bcreated by\b"),
@@ -98,7 +101,9 @@ _RULES_CORE = [
     ("cataloguing",  r"\bin 1[5-9]\d\d\b"),     # "in 1889", "in 1534"
     ("cataloguing",  r"\bin 20[0-2]\d\b"),       # "in 2005" (modern accessions)
 
-    ("cataloguing",  r"\boil on (?:canvas|panel|board|wood|copper|linen)\b"),
+    # REMOVED: r"\boil on (?:canvas|panel|board|wood|copper|linen)\b"
+    # Reason: "oil on canvas / panel / wood" is a medium description — visual content.
+    # Attribution sentences that mention the medium are caught by "painting by" etc.
     ("cataloguing",  r"\bmeasures?\b"),           # "measures 80 × 60 cm"
     ("cataloguing",  r"\bdimensions?\b"),
     ("cataloguing",  r"\binventory number\b"),
