@@ -127,6 +127,11 @@ def print_results(label, metrics):
 
 def main():
     args   = parse_args()
+
+    # Set BEFORE any import that might pull in mlflow (e.g. LAVIS → omegaconf → mlflow).
+    import os
+    os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
@@ -162,6 +167,11 @@ def main():
     # --- Fine-tuned checkpoint (optional) ---
     ft_metrics = None
     if args.checkpoint:
+        # Free pretrained model before loading fine-tuned to avoid dual-model VRAM pressure.
+        del model_pre, vis_proc_eval
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
         print(f"\nLoading fine-tuned checkpoint: {args.checkpoint}...", flush=True)
         model_ft, vis_processors_ft, _ = load_model_and_preprocess(
             name="blip_caption", model_type="base_coco", is_eval=True, device=device
@@ -202,8 +212,8 @@ def main():
     # --- Optional MLflow logging (lazy import) ---
     if args.use_mlflow:
         import mlflow
-        # Log all runs under the shared outputs root.
-        mlflow.set_tracking_uri("file:" + str(Path(args.output_dir).resolve() / "mlruns"))
+        db = Path(args.output_dir).resolve() / "mlruns.db"
+        mlflow.set_tracking_uri("sqlite:///" + str(db).replace("\\", "/"))
         mlflow.set_experiment(args.mlflow_experiment)
         with mlflow.start_run(run_name=args.run_name):
             mlflow.log_params({

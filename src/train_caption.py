@@ -275,6 +275,11 @@ def write_reports(run_dir, run_info):
 
 def main():
     args   = parse_args()
+
+    # Set BEFORE any import that might pull in mlflow (e.g. LAVIS → omegaconf → mlflow).
+    import os
+    os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
@@ -402,8 +407,8 @@ def main():
     # ── MLflow setup ──────────────────────────────────────────────────────────
     if args.use_mlflow:
         import mlflow
-        # Keep all MLflow runs under the shared outputs root, next to checkpoints.
-        mlflow.set_tracking_uri("file:" + str(Path(args.output_dir).resolve() / "mlruns"))
+        db = Path(args.output_dir).resolve() / "mlruns.db"
+        mlflow.set_tracking_uri("sqlite:///" + str(db).replace("\\", "/"))
         mlflow.set_experiment(args.mlflow_experiment)
         mlflow_run = mlflow.start_run(run_name=args.run_name)
         mlflow.log_params({

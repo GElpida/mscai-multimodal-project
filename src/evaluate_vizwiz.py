@@ -192,6 +192,10 @@ def parse_args():
 
 def main():
     args   = parse_args()
+
+    # Set BEFORE any import that might pull in mlflow (e.g. LAVIS → omegaconf → mlflow).
+    _os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
@@ -234,7 +238,17 @@ def main():
         flush=True,
     )
     from datasets import load_dataset   # lazy import; not needed for non-streaming usage
-    stream = load_dataset("lmms-lab/VizWiz-Caps", split=args.split, streaming=True)
+    import time as _time
+    stream = None
+    for _attempt in range(1, 4):
+        try:
+            stream = load_dataset("lmms-lab/VizWiz-Caps", split=args.split, streaming=True)
+            break
+        except Exception as _e:
+            if _attempt == 3:
+                raise
+            print(f"  [WARN] load_dataset attempt {_attempt} failed: {_e}  — retrying in 5 s...", flush=True)
+            _time.sleep(5)
 
     # Defensive field discovery: inspect the first sample and print its schema
     # so that any schema change is immediately visible instead of silently broken.
@@ -245,9 +259,11 @@ def main():
         print(f"  {k!r:30s} type={type(v).__name__}, shape/len={shape}")
     print("---------------------------\n")
 
+    import itertools
     eval_data = []
+    # Chain first back so schema-peek doesn't lose a sample.
     with tqdm(total=args.limit, desc="Collecting VizWiz samples", unit="img") as pbar:
-        for sample in stream:
+        for sample in itertools.chain([first], stream):
             try:
                 image = get_image(sample).convert("RGB")
                 refs  = get_references(sample)
@@ -289,6 +305,11 @@ def main():
     # ---- Fine-tuned (optional) ---------------------------------------------
     ft_metrics = None
     if args.checkpoint:
+        # Free pretrained model before loading fine-tuned to avoid dual-model VRAM pressure.
+        del model_pre, vis_proc
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
         print(f"\nLoading fine-tuned checkpoint: {args.checkpoint}", flush=True)
         model_ft, vis_ft, _ = load_model_and_preprocess(
             name="blip_caption", model_type="base_coco", is_eval=True, device=device
@@ -324,8 +345,8 @@ def main():
     # ---- Optional MLflow ---------------------------------------------------
     if args.use_mlflow:
         import mlflow
-        # Log all runs under the shared outputs root.
-        mlflow.set_tracking_uri("file:" + str(Path(args.output_dir).resolve() / "mlruns"))
+        db = Path(args.output_dir).resolve() / "mlruns.db"
+        mlflow.set_tracking_uri("sqlite:///" + str(db).replace("\\", "/"))
         mlflow.set_experiment(args.mlflow_experiment)
         with mlflow.start_run(run_name=args.run_name):
             mlflow.log_params({
