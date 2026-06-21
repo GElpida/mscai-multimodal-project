@@ -107,7 +107,14 @@ def eval_model(model, vis_processor, eval_data, device, n_samples=5,
         ):
             image        = Image.open(img_path).convert("RGB")
             image_tensor = vis_processor(image).unsqueeze(0).to(device)
-            caption      = model.generate({"image": image_tensor})[0]
+            caption      = model.generate(
+                {"image": image_tensor},
+                use_nucleus_sampling=False,
+                num_beams=3,
+                max_length=40,
+                min_length=10,
+                repetition_penalty=1.2,
+            )[0]
             gts[img_id]  = refs
             res[img_id]  = [caption]
             if len(samples) < n_samples:

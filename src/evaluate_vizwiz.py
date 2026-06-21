@@ -154,7 +154,14 @@ def eval_model(model, vis_processor, eval_data, device, desc="Generating caption
             tqdm(eval_data, desc=desc, total=len(eval_data), unit="img")
         ):
             image_tensor = vis_processor(image).unsqueeze(0).to(device)
-            caption      = model.generate({"image": image_tensor})[0]
+            caption      = model.generate(
+                {"image": image_tensor},
+                use_nucleus_sampling=False,
+                num_beams=3,
+                max_length=40,
+                min_length=10,
+                repetition_penalty=1.2,
+            )[0]
             gts[img_id]  = refs
             res[img_id]  = [caption]
 
