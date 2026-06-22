@@ -2,6 +2,8 @@
 
 A multimodal pipeline that transforms painting images into expressive spoken descriptions for visually impaired museum visitors.
 
+**Course:** ML on Multimedia Data — MSc in AI, Semester 2  
+
 ## Abstract
 
 This project presents a multimodal pipeline that helps visually impaired museum visitors by turning a painting image into an expressive spoken description. In Stage 1 (vision-to-text), a BLIP image-captioning model fine-tuned on the Artpedia art dataset generates a visual description of the artwork. In Stage 2, the caption is enriched with optional structured metadata (title, year, art period) and an automatically chosen narration tone. In Stage 3 (text-to-speech), the enriched text is synthesized into expressive speech using edge-tts, with prosody parameters driven by the selected tone. The model's robustness is additionally evaluated zero-shot on VizWiz — photographs taken by blind people — using BLEU-4 and CIDEr as evaluation metrics.
@@ -46,6 +48,29 @@ flowchart TB
     classDef data fill:#f5f5f0,stroke:#888,stroke-width:1.5px,color:#1a1a1a
     classDef process fill:#f5f5f0,stroke:#888,stroke-width:1.5px,color:#1a1a1a
     classDef decision fill:#f0ead8,stroke:#a89048,stroke-width:1.5px,color:#1a1a1a
+```
+
+## Repository Structure
+
+```
+mscai-multimodal-project/
+├── data/
+│   ├── images/          # Artpedia images, split into train / val / test
+│   ├── processed/       # JSONL manifests (train/val/test and *_clean variants)
+│   └── vizwiz/          # VizWiz-Caps local dataset
+│       └── val/         # Validation images + val.json annotations
+├── dataset/
+│   └── artpedia/        # Raw artpedia.json source file
+├── exams_2026/          # Project report and presentation
+├── notebooks/           # Jupyter notebooks (run from this folder)
+├── outputs/             # All generated outputs
+│   ├── train_*/         # Fine-tuning checkpoints per run
+│   ├── eval_*/          # Artpedia evaluation results per run
+│   ├── vizwiz_*/        # VizWiz evaluation results per run
+│   ├── tsne_*/          # t-SNE plots per run
+│   ├── tts_outputs/     # Synthesised .mp3 files
+│   └── mlruns/          # MLflow experiment tracking
+└── src/                 # Pipeline scripts
 ```
 
 ## Setup
@@ -109,7 +134,6 @@ Listed in order of use across the pipeline:
 | `inspect_decoder.py` | Inspects the text decoder layers and frozen/unfrozen state |
 | `mlflow_ui.py` | Launches the MLflow tracking UI for experiment results |
 
-
 ## References
 
 **Datasets**
@@ -124,3 +148,9 @@ Listed in order of use across the pipeline:
 **Evaluation metrics**
 - Papineni et al., "BLEU: A Method for Automatic Evaluation of Machine Translation", ACL 2002.
 - Vedantam et al., "CIDEr: Consensus-Based Image Description Evaluation", CVPR 2015.
+
+---
+
+## Authors
+
+**Elpida Gkouvra** (mtn2504) · **Stella Chantava** (mtn2528)
